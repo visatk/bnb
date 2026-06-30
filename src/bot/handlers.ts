@@ -6,8 +6,6 @@ import {
   setSessionState,
   updateUserVerified,
   addBalance,
-  updateLastBonus,
-  getReferralCount,
   getReferralCount,
   getTopReferrers,
   getAllUserIds,

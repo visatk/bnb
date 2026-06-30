@@ -101,3 +101,20 @@ export async function setSessionState(db: D1Database, userId: number, state: str
 export async function clearSession(db: D1Database, userId: number): Promise<void> {
     await db.prepare('DELETE FROM sessions WHERE id = ?').bind(userId).run();
 }
+
+// Withdrawal queries
+export async function deductBalance(db: D1Database, userId: number, amount: number): Promise<boolean> {
+  const { success, meta } = await db.prepare(`
+    UPDATE users SET balance = balance - ? 
+    WHERE id = ? AND balance >= ?
+  `).bind(amount, userId, amount).run();
+  
+  return success && (meta.changes > 0);
+}
+
+export async function createWithdrawal(db: D1Database, userId: number, amount: number, address: string): Promise<void> {
+  await db.prepare(`
+    INSERT INTO withdrawals (user_id, amount, wallet_address)
+    VALUES (?, ?, ?)
+  `).bind(userId, amount, address).run();
+}
