@@ -11,7 +11,9 @@ import {
   getReferralCount,
   getTopReferrers,
   getAllUserIds,
-  claimBonus
+  claimBonus,
+  deductBalance,
+  createWithdrawal
 } from '../db/queries';
 import { mainMenu, joinChannelsKeyboard, captchaKeyboard, CHANNELS } from './menus';
 import { generateCaptcha } from '../utils/captcha';
@@ -20,7 +22,7 @@ export type MyContext = Context & { db: D1Database, queue: Queue, waitUntil: (pr
 
 const SIGNUP_BONUS = 0.000001; // BNB
 const DAILY_BONUS = 0.000001;
-const MIN_WITHDRAWAL = 30; // $30 equivalent
+const MIN_WITHDRAWAL_BNB = 0.05; // ~ $30 equivalent
 
 export function setupHandlers(bot: Bot<MyContext>) {
   // Global error boundary
@@ -113,20 +115,21 @@ export function setupHandlers(bot: Bot<MyContext>) {
     if (!ctx.from) return;
     const userId = ctx.from.id;
     
-    // Optional: Actually verify channel membership here using ctx.api.getChatMember
-    // For simplicity, we assume they joined or we just generate the captcha
-    /*
+    // Verify channel membership
     for (const channel of CHANNELS) {
       try {
-        const member = await ctx.api.getChatMember('@drkingbd', userId);
+        const member = await ctx.api.getChatMember(channel.name.toLowerCase() === 'drkingbd' ? '@drkingbd' : channel.url, userId);
         if (member.status === 'left' || member.status === 'kicked') {
-           return ctx.reply('You have not joined all channels!');
+           return ctx.reply(`❌ You have not joined ${channel.name}! Please join and click "✅ All Joined" again.`);
         }
-      } catch (e) {
-        // Bot is not admin or channel invalid
+      } catch (e: any) {
+        // Log the error but don't crash. If bot is not admin, it will fail here.
+        console.error(`Failed to check membership for ${channel.name}:`, e.message);
+        // For strict force join, if we can't verify, we should probably tell the user or admin.
+        // We will assume they haven't joined if we get an error (e.g. chat not found/bot not admin)
+        return ctx.reply(`⚠️ I cannot verify your membership in ${channel.name} right now. Please ensure I am an admin in the channel.`);
       }
     }
-    */
 
     const captcha = generateCaptcha();
     await setSessionState(ctx.db, userId, 'awaiting_captcha', captcha.emoji);
@@ -183,7 +186,7 @@ export function setupHandlers(bot: Bot<MyContext>) {
     await ctx.reply(
       `💰 **Your Balance:**\n\n` +
       `Balance: ${user?.balance.toFixed(6)} BNB\n` +
-      `Min. withdrawal is $${MIN_WITHDRAWAL} (equivalent)`,
+      `Min. withdrawal is ${MIN_WITHDRAWAL_BNB} BNB (~$30)`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -204,8 +207,14 @@ export function setupHandlers(bot: Bot<MyContext>) {
 
   bot.hears('🤑 Withdraw', requireVerified, async (ctx) => {
     const user = await getUser(ctx.db, ctx.from!.id);
-    // Assuming BNB is roughly $600 for simplicity in display, or just sticking to a static message
-    await ctx.reply(`😔 To withdraw, you need at least $${MIN_WITHDRAWAL} in equivalent balance.\nInvite your friends to get more!`);
+    if (!user) return;
+
+    if (user.balance >= MIN_WITHDRAWAL_BNB) {
+      await setSessionState(ctx.db, user.id, 'awaiting_wallet_address');
+      await ctx.reply(`🏦 **Withdrawal**\n\nYou have ${user.balance.toFixed(6)} BNB available.\n\nPlease reply with your Binance Smart Chain (BEP-20) wallet address:`, { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply(`😔 To withdraw, you need at least ${MIN_WITHDRAWAL_BNB} BNB.\nInvite your friends to earn more!`);
+    }
   });
 
   bot.hears('💲 Earn More', requireVerified, async (ctx) => {
@@ -246,5 +255,41 @@ export function setupHandlers(bot: Bot<MyContext>) {
     msg += `\n👑 **You - ${myRank} refs**`;
     
     await ctx.reply(msg, { parse_mode: 'Markdown' });
+  });
+
+  // --- General Text Handler for Sessions ---
+  bot.on('message:text', async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ctx.from.id;
+    const session = await getSession(ctx.db, userId);
+
+    if (session && session.state === 'awaiting_wallet_address') {
+      const walletAddress = ctx.message.text.trim();
+      
+      // Basic validation for BSC/ETH address
+      if (!/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+        return ctx.reply('⚠️ Invalid wallet address format. Please provide a valid BEP-20 (BSC) address starting with 0x.');
+      }
+
+      const user = await getUser(ctx.db, userId);
+      if (!user) return;
+
+      if (user.balance < MIN_WITHDRAWAL_BNB) {
+        await setSessionState(ctx.db, userId, 'main_menu');
+        return ctx.reply('❌ You no longer have enough balance to withdraw.');
+      }
+
+      // Deduct full balance
+      const withdrawAmount = user.balance;
+      const success = await deductBalance(ctx.db, userId, withdrawAmount);
+
+      if (success) {
+        await createWithdrawal(ctx.db, userId, withdrawAmount, walletAddress);
+        await setSessionState(ctx.db, userId, 'main_menu');
+        await ctx.reply(`✅ **Withdrawal Requested!**\n\nAmount: ${withdrawAmount.toFixed(6)} BNB\nAddress: \`${walletAddress}\`\n\nYour request has been recorded and is pending review.`, { parse_mode: 'Markdown' });
+      } else {
+        await ctx.reply('❌ Failed to process withdrawal. Please try again later.');
+      }
+    }
   });
 }
