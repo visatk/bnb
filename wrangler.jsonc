@@ -17,19 +17,19 @@
     {
       "binding": "DB",
       "database_name": "giveaway",
-      "database_id": "6ad478e8-6eba-43e1-b4de-4b4b9aaaa310"
+      "database_id": "f31195aa-ccb3-42fd-ab54-3dfeff113d0d"
     }
   ],
   "queues": {
     "producers": [
       {
-        "queue": "broadcasts",
+        "queue": "openclaw-telemetry",
         "binding": "QUEUE"
       }
     ],
     "consumers": [
       {
-        "queue": "broadcasts",
+        "queue": "openclaw-telemetry",
         "max_batch_size": 50,
         "max_batch_timeout": 5
       }
